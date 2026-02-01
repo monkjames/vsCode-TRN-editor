@@ -410,10 +410,11 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPOL DATA: vertexCount, featherAmount, vertices...
-                if (chunkSize >= 8) {
+                // BPOL DATA: vertexCount, featherType, featherAmount, vertices...
+                if (chunkSize >= 12) {
                     const dataEnd = this.pos + chunkSize;
                     const vertexCount = this.readUint32LE();
+                    featherType = this.readUint32LE();
                     featherAmount = this.readFloat32LE();
 
                     vertices = [];
@@ -466,9 +467,11 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                if (chunkSize >= 8) {
+                // BPOL DATA: vertexCount, featherType, featherAmount, vertices...
+                if (chunkSize >= 12) {
                     const dataEnd = this.pos + chunkSize;
                     const vertexCount = this.readUint32LE();
+                    this.readUint32LE(); // featherType (skip)
                     featherAmount = this.readFloat32LE();
                     vertices = [];
                     for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
