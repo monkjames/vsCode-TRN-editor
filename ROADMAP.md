@@ -37,33 +37,40 @@
 
 ---
 
+## Completed Features
+
+### Phase 1: Property Editing (Read-Write Support) ✓
+
+Converted from `CustomReadonlyEditorProvider` to `CustomEditorProvider` with full edit support.
+
+#### Property Panel ✓
+- [x] Show properties when boundary is selected (tree or map click)
+- [x] Editable fields for each boundary type:
+  - **BCIR**: Center X, Center Z, Radius, Feather Amount
+  - **BREC**: X1, Z1, X2, Z2, Feather Amount
+  - **BPLN**: Width, Feather Amount
+  - **BPOL**: Feather Amount
+- [x] Real-time map update when properties change
+- [x] Modified field highlighting (orange border)
+- [ ] Feather type dropdown (easeIn, easeOut, easeInOut, linear) - *future*
+- [ ] Name editing (IHDR/DATA chunk) - *future*
+
+#### Binary Writing ✓
+- [x] Track DATA chunk offsets during parsing
+- [x] Write float32/uint32 values back to correct positions
+- [ ] Handle size changes if name length changes - *future*
+- [ ] Recalculate parent FORM sizes when content changes - *future*
+
+#### Save Workflow ✓
+- [x] Mark document as dirty on edits
+- [x] Implement `saveCustomDocument` and `saveCustomDocumentAs`
+- [x] Undo/redo support via VS Code edit events
+- [x] Backup on save
+- [ ] Verify file integrity after save - *future*
+
+---
+
 ## Planned Features
-
-### Phase 1: Property Editing (Read-Write Support)
-
-Convert from `CustomReadonlyEditorProvider` to `CustomEditorProvider` with edit support.
-
-#### Property Panel
-- [ ] Show properties when boundary is selected (tree or map click)
-- [ ] Editable fields for each boundary type:
-  - **BCIR**: Center X, Center Z, Radius, Feather Type, Feather Amount
-  - **BREC**: X1, Z1, X2, Z2, Feather Type, Feather Amount
-  - **BPOL**: Vertex list, Feather Amount
-  - **BPLN**: Vertex list, Width, Feather Amount
-- [ ] Feather type dropdown (easeIn, easeOut, easeInOut, linear)
-- [ ] Name editing (IHDR/DATA chunk)
-
-#### Binary Writing
-- [ ] Track DATA chunk offsets during parsing
-- [ ] Write float32/uint32 values back to correct positions
-- [ ] Handle size changes if name length changes
-- [ ] Recalculate parent FORM sizes when content changes
-
-#### Save Workflow
-- [ ] Mark document as dirty on edits
-- [ ] Implement `saveCustomDocument` and `saveCustomDocumentAs`
-- [ ] Create backup before saving (optional)
-- [ ] Verify file integrity after save
 
 ### Phase 2: Visual Editing
 
