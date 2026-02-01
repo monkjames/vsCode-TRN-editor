@@ -626,7 +626,7 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
     </div>
 
     <!-- PROPERTY PANEL (floating, shown when boundary selected) -->
-    <div id="propertyPanel" class="property-panel" style="display:none;">
+    <div id="propertyPanel" class="property-panel">
         <div class="property-header">
             <span id="propertyTitle">Properties</span>
             <button class="close-btn" onclick="closePropertyPanel()">×</button>
@@ -1502,18 +1502,28 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
             const my = e.clientY - rect.top;
             const world = screenToWorld(mx, my);
 
+            console.log('Click at:', world.x.toFixed(1), world.z.toFixed(1));
+
             queryPoint = { x: world.x, z: world.z };
             queryResults = findBoundariesAtPoint(world.x, world.z);
+            console.log('Found boundaries:', queryResults.length);
+
             render();
             showMapQueryResults(world.x, world.z, queryResults);
 
             // Show property panel for first result
             if (queryResults.length > 0) {
                 const firstResult = queryResults[0];
-                const index = boundaries.indexOf(firstResult);
+                console.log('First boundary:', firstResult.type, 'offset:', firstResult.offset);
+                // Find by offset since filter returns new array references
+                const index = boundaries.findIndex(b => b.offset === firstResult.offset);
+                console.log('Index in boundaries array:', index);
                 if (index >= 0) {
                     showPropertyPanel(index);
                 }
+            } else {
+                // Hide panel if no boundary clicked
+                document.getElementById('propertyPanel').style.display = 'none';
             }
         }
 
@@ -1571,10 +1581,11 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
 
         function showMapQueryResults(x, z, results) {
             const div = document.getElementById('mapQueryResults');
+            let html = '';
             if (results.length === 0) {
-                div.innerHTML = '<h4>Query: (' + x.toFixed(1) + ', ' + z.toFixed(1) + ')</h4><p>No boundaries found</p>';
+                html = '<h4>Query: (' + x.toFixed(1) + ', ' + z.toFixed(1) + ')</h4><p>No boundaries found</p>';
             } else {
-                let html = '<h4>' + results.length + ' at (' + x.toFixed(1) + ', ' + z.toFixed(1) + ')</h4>';
+                html = '<h4>' + results.length + ' at (' + x.toFixed(1) + ', ' + z.toFixed(1) + ')</h4>';
                 results.forEach(b => {
                     html += '<div class="map-result-item"><span class="boundary-type type-' + b.type + '" style="font-size:10px">' + b.type + '</span> ';
                     if (b.type === 'circle') {
@@ -1583,6 +1594,8 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
                         html += (b.x2-b.x1).toFixed(0) + 'x' + (b.z2-b.z1).toFixed(0);
                     } else if (b.type === 'polygon') {
                         html += b.vertices.length + ' verts';
+                    } else if (b.type === 'polyline') {
+                        html += b.vertices.length + ' points, W=' + b.width.toFixed(0);
                     }
                     html += '</div>';
                 });
@@ -1963,8 +1976,13 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
         let originalValues = {};
 
         function showPropertyPanel(boundaryIndex) {
+            console.log('showPropertyPanel called with index:', boundaryIndex);
             const boundary = boundaries[boundaryIndex];
-            if (!boundary) return;
+            if (!boundary) {
+                console.log('No boundary found at index:', boundaryIndex);
+                return;
+            }
+            console.log('Showing properties for:', boundary.type, boundary.name);
 
             selectedBoundaryIndex = boundaryIndex;
             originalValues = {};
