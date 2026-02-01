@@ -1506,6 +1506,15 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
             queryResults = findBoundariesAtPoint(world.x, world.z);
             render();
             showMapQueryResults(world.x, world.z, queryResults);
+
+            // Show property panel for first result
+            if (queryResults.length > 0) {
+                const firstResult = queryResults[0];
+                const index = boundaries.indexOf(firstResult);
+                if (index >= 0) {
+                    showPropertyPanel(index);
+                }
+            }
         }
 
         // Point-in-boundary tests
@@ -2095,31 +2104,17 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
             }
         });
 
-        // Update map click to also show property panel
-        const originalOnClick = onClick;
-        onClick = function(e) {
-            if (isDragging) return;
-            const rect = canvas.getBoundingClientRect();
-            const mx = e.clientX - rect.left;
-            const my = e.clientY - rect.top;
-            const world = screenToWorld(mx, my);
-
-            queryPoint = { x: world.x, z: world.z };
-            queryResults = findBoundariesAtPoint(world.x, world.z);
-            render();
-            showMapQueryResults(world.x, world.z, queryResults);
-
-            // Show property panel for first result
-            if (queryResults.length > 0) {
-                const firstResult = queryResults[0];
-                const index = boundaries.indexOf(firstResult);
-                if (index >= 0) {
-                    showPropertyPanel(index);
-                }
+        // Helper to find tree nodes by ID
+        function findNodeById(node, id) {
+            if (node.id === id) return node;
+            for (const child of node.children || []) {
+                const found = findNodeById(child, id);
+                if (found) return found;
             }
-        };
+            return null;
+        }
 
-        // Also allow clicking boundaries in the tree to show properties
+        // Override selectNode to also show property panel for boundaries
         const originalSelectNode = window.selectNode;
         window.selectNode = function(nodeId) {
             originalSelectNode(nodeId);
@@ -2134,15 +2129,6 @@ export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocumen
                 }
             }
         };
-
-        function findNodeById(node, id) {
-            if (node.id === id) return node;
-            for (const child of node.children || []) {
-                const found = findNodeById(child, id);
-                if (found) return found;
-            }
-            return null;
-        }
 
         // Init
         initMap();
