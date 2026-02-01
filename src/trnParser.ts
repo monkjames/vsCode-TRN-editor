@@ -516,13 +516,13 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPLN DATA: vertexCount, width, featherAmount, vertices...
-                // (width comes BEFORE featherAmount based on SWGTerrain)
-                if (chunkSize >= 12) {
+                // BPLN DATA: featherType, featherAmount, width, vertexCount, vertices...
+                if (chunkSize >= 16) {
                     const dataEnd = this.pos + chunkSize;
-                    const vertexCount = this.readUint32LE();
-                    width = this.readFloat32LE();
+                    featherType = this.readUint32LE();
                     featherAmount = this.readFloat32LE();
+                    width = this.readFloat32LE();
+                    const vertexCount = this.readUint32LE();
 
                     vertices = [];
                     for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
@@ -576,12 +576,13 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPLN DATA: vertexCount, width, featherAmount, vertices...
-                if (chunkSize >= 12) {
+                // BPLN DATA: featherType, featherAmount, width, vertexCount, vertices...
+                if (chunkSize >= 16) {
                     const dataEnd = this.pos + chunkSize;
-                    const vertexCount = this.readUint32LE();
-                    width = this.readFloat32LE();
+                    this.readUint32LE(); // featherType (skip)
                     featherAmount = this.readFloat32LE();
+                    width = this.readFloat32LE();
+                    const vertexCount = this.readUint32LE();
                     vertices = [];
                     for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
                         vertices.push({
