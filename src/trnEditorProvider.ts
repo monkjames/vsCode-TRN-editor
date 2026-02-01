@@ -3,10 +3,26 @@ import { TRNParser, Boundary, findBoundariesAtPoint } from './trnParser';
 import { validateTRN, ValidationResult } from './trnValidator';
 import { TRNTreeParser, TRNTree, TRNNode, searchTree, markTreeErrors, getLayerHierarchy, getBoundariesInLayer, LayerInfo } from './trnTree';
 
-export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TRNDocument> {
+/**
+ * Edit types for tracking changes
+ */
+interface BoundaryEdit {
+    type: 'boundary';
+    boundaryIndex: number;
+    field: string;
+    oldValue: number;
+    newValue: number;
+    dataOffset: number;  // Offset within DATA chunk for this field
+}
+
+type TRNEdit = BoundaryEdit;
+
+export class TRNEditorProvider implements vscode.CustomEditorProvider<TRNDocument> {
+    private static readonly viewType = 'swgemu.trnViewer';
+
     public static register(context: vscode.ExtensionContext): vscode.Disposable {
         return vscode.window.registerCustomEditorProvider(
-            'swgemu.trnViewer',
+            TRNEditorProvider.viewType,
             new TRNEditorProvider(context),
             {
                 webviewOptions: { retainContextWhenHidden: true },
@@ -15,20 +31,55 @@ export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TR
         );
     }
 
+    private readonly _onDidChangeCustomDocument = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<TRNDocument>>();
+    public readonly onDidChangeCustomDocument = this._onDidChangeCustomDocument.event;
+
     constructor(private readonly context: vscode.ExtensionContext) {}
 
-    async openCustomDocument(uri: vscode.Uri): Promise<TRNDocument> {
+    async openCustomDocument(
+        uri: vscode.Uri,
+        openContext: vscode.CustomDocumentOpenContext,
+        token: vscode.CancellationToken
+    ): Promise<TRNDocument> {
         const data = await vscode.workspace.fs.readFile(uri);
         return new TRNDocument(uri, data);
     }
 
+    async saveCustomDocument(document: TRNDocument, cancellation: vscode.CancellationToken): Promise<void> {
+        await vscode.workspace.fs.writeFile(document.uri, document.getData());
+        document.markSaved();
+    }
+
+    async saveCustomDocumentAs(document: TRNDocument, destination: vscode.Uri, cancellation: vscode.CancellationToken): Promise<void> {
+        await vscode.workspace.fs.writeFile(destination, document.getData());
+    }
+
+    async revertCustomDocument(document: TRNDocument, cancellation: vscode.CancellationToken): Promise<void> {
+        const data = await vscode.workspace.fs.readFile(document.uri);
+        document.revert(data);
+    }
+
+    async backupCustomDocument(document: TRNDocument, context: vscode.CustomDocumentBackupContext, cancellation: vscode.CancellationToken): Promise<vscode.CustomDocumentBackup> {
+        await vscode.workspace.fs.writeFile(context.destination, document.getData());
+        return {
+            id: context.destination.toString(),
+            delete: async () => {
+                try {
+                    await vscode.workspace.fs.delete(context.destination);
+                } catch { /* ignore */ }
+            }
+        };
+    }
+
     async resolveCustomEditor(
         document: TRNDocument,
-        webviewPanel: vscode.WebviewPanel
+        webviewPanel: vscode.WebviewPanel,
+        token: vscode.CancellationToken
     ): Promise<void> {
         webviewPanel.webview.options = { enableScripts: true };
         webviewPanel.webview.html = this.getHtmlContent(webviewPanel.webview, document);
 
+        // Handle messages from webview
         webviewPanel.webview.onDidReceiveMessage(message => {
             switch (message.type) {
                 case 'query':
@@ -41,6 +92,7 @@ export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TR
                         boundaries: results
                     });
                     break;
+
                 case 'validate':
                     const validation = validateTRN(document.boundaries);
                     webviewPanel.webview.postMessage({
@@ -48,8 +100,62 @@ export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TR
                         ...validation
                     });
                     break;
+
+                case 'editBoundary':
+                    this.handleBoundaryEdit(document, message, webviewPanel);
+                    break;
             }
         });
+
+        // Listen for document changes to update webview
+        document.onDidChange(() => {
+            webviewPanel.webview.postMessage({
+                type: 'documentChanged',
+                boundaries: document.boundaries
+            });
+        });
+    }
+
+    private handleBoundaryEdit(document: TRNDocument, message: any, webviewPanel: vscode.WebviewPanel): void {
+        const { boundaryIndex, field, value } = message;
+        const boundary = document.boundaries[boundaryIndex];
+        if (!boundary) return;
+
+        const oldValue = (boundary as any)[field];
+        const newValue = parseFloat(value);
+
+        if (isNaN(newValue) || oldValue === newValue) return;
+
+        // Apply the edit
+        const edit = document.applyEdit(boundaryIndex, field, newValue);
+        if (edit) {
+            // Fire the change event so VS Code knows the document is dirty
+            this._onDidChangeCustomDocument.fire({
+                document,
+                undo: async () => {
+                    document.applyEdit(boundaryIndex, field, oldValue);
+                    webviewPanel.webview.postMessage({
+                        type: 'documentChanged',
+                        boundaries: document.boundaries
+                    });
+                },
+                redo: async () => {
+                    document.applyEdit(boundaryIndex, field, newValue);
+                    webviewPanel.webview.postMessage({
+                        type: 'documentChanged',
+                        boundaries: document.boundaries
+                    });
+                }
+            });
+
+            // Update webview
+            webviewPanel.webview.postMessage({
+                type: 'editApplied',
+                boundaryIndex,
+                field,
+                value: newValue
+            });
+        }
     }
 
     private getHtmlContent(webview: vscode.Webview, document: TRNDocument): string {
@@ -518,6 +624,118 @@ export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TR
             </div>
         </div>
     </div>
+
+    <!-- PROPERTY PANEL (floating, shown when boundary selected) -->
+    <div id="propertyPanel" class="property-panel" style="display:none;">
+        <div class="property-header">
+            <span id="propertyTitle">Properties</span>
+            <button class="close-btn" onclick="closePropertyPanel()">×</button>
+        </div>
+        <div class="property-content" id="propertyContent">
+            <!-- Dynamic content -->
+        </div>
+    </div>
+
+    <style>
+        .property-panel {
+            position: fixed;
+            top: 100px;
+            right: 20px;
+            width: 280px;
+            background: var(--input-bg);
+            border: 1px solid var(--accent);
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
+        .property-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            font-weight: bold;
+        }
+        .property-header .close-btn {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--fg);
+            padding: 0 4px;
+        }
+        .property-header .close-btn:hover {
+            color: #ef4444;
+        }
+        .property-content {
+            padding: 12px 14px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .property-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .property-label {
+            width: 90px;
+            font-size: 0.9em;
+            opacity: 0.8;
+        }
+        .property-input {
+            flex: 1;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        .property-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+        .property-input.modified {
+            border-color: #f59e0b;
+            background: rgba(245, 158, 11, 0.1);
+        }
+        .property-section {
+            font-weight: bold;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            opacity: 0.6;
+            margin: 12px 0 8px 0;
+            padding-top: 8px;
+            border-top: 1px solid var(--border);
+        }
+        .property-section:first-child {
+            margin-top: 0;
+            padding-top: 0;
+            border-top: none;
+        }
+        .property-type-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.8em;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        .property-type-badge.circle { background: #3b82f6; color: white; }
+        .property-type-badge.rectangle { background: #10b981; color: white; }
+        .property-type-badge.polygon { background: #f59e0b; color: black; }
+        .property-type-badge.polyline { background: #8b5cf6; color: white; }
+        .property-readonly {
+            background: var(--input-bg);
+            opacity: 0.7;
+        }
+        .save-hint {
+            font-size: 0.8em;
+            opacity: 0.6;
+            margin-top: 8px;
+            text-align: center;
+        }
+    </style>
 
     <style>
         .map-layout {
@@ -1731,6 +1949,201 @@ export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TR
             renderTree();
         }
 
+        // === PROPERTY PANEL ===
+        let selectedBoundaryIndex = -1;
+        let originalValues = {};
+
+        function showPropertyPanel(boundaryIndex) {
+            const boundary = boundaries[boundaryIndex];
+            if (!boundary) return;
+
+            selectedBoundaryIndex = boundaryIndex;
+            originalValues = {};
+
+            const panel = document.getElementById('propertyPanel');
+            const title = document.getElementById('propertyTitle');
+            const content = document.getElementById('propertyContent');
+
+            title.textContent = boundary.name || boundary.type;
+
+            let html = '<span class="property-type-badge ' + boundary.type + '">' + boundary.type.toUpperCase() + '</span>';
+            html += '<div class="property-section">Position</div>';
+
+            if (boundary.type === 'circle') {
+                html += createPropertyRow('centerX', 'Center X', boundary.centerX);
+                html += createPropertyRow('centerZ', 'Center Z', boundary.centerZ);
+                html += '<div class="property-section">Size</div>';
+                html += createPropertyRow('radius', 'Radius', boundary.radius);
+            } else if (boundary.type === 'rectangle') {
+                html += createPropertyRow('x1', 'X1 (min)', boundary.x1);
+                html += createPropertyRow('z1', 'Z1 (min)', boundary.z1);
+                html += createPropertyRow('x2', 'X2 (max)', boundary.x2);
+                html += createPropertyRow('z2', 'Z2 (max)', boundary.z2);
+            } else if (boundary.type === 'polygon') {
+                html += '<div class="property-row"><span class="property-label">Vertices</span>';
+                html += '<input type="text" class="property-input property-readonly" readonly value="' + boundary.vertices.length + ' points"></div>';
+            } else if (boundary.type === 'polyline') {
+                html += '<div class="property-row"><span class="property-label">Vertices</span>';
+                html += '<input type="text" class="property-input property-readonly" readonly value="' + boundary.vertices.length + ' points"></div>';
+                html += '<div class="property-section">Size</div>';
+                html += createPropertyRow('width', 'Width', boundary.width);
+            }
+
+            html += '<div class="property-section">Feathering</div>';
+            html += createPropertyRow('featherAmount', 'Amount', boundary.featherAmount);
+
+            html += '<div class="save-hint">Press Enter to apply • Ctrl+S to save file</div>';
+
+            content.innerHTML = html;
+            panel.style.display = 'block';
+
+            // Store original values for change detection
+            ['centerX', 'centerZ', 'radius', 'x1', 'z1', 'x2', 'z2', 'width', 'featherAmount'].forEach(field => {
+                if (boundary[field] !== undefined) {
+                    originalValues[field] = boundary[field];
+                }
+            });
+        }
+
+        function createPropertyRow(field, label, value) {
+            const displayValue = typeof value === 'number' ? value.toFixed(2) : value;
+            return '<div class="property-row">' +
+                '<span class="property-label">' + label + '</span>' +
+                '<input type="number" step="any" class="property-input" ' +
+                'id="prop_' + field + '" ' +
+                'data-field="' + field + '" ' +
+                'value="' + displayValue + '" ' +
+                'onchange="onPropertyChange(\\'' + field + '\\')" ' +
+                'onkeydown="onPropertyKeydown(event, \\'' + field + '\\')">' +
+                '</div>';
+        }
+
+        window.onPropertyChange = function(field) {
+            const input = document.getElementById('prop_' + field);
+            const newValue = parseFloat(input.value);
+
+            if (isNaN(newValue)) return;
+
+            // Check if value changed from original
+            if (originalValues[field] !== undefined && newValue !== originalValues[field]) {
+                input.classList.add('modified');
+            } else {
+                input.classList.remove('modified');
+            }
+        };
+
+        window.onPropertyKeydown = function(event, field) {
+            if (event.key === 'Enter') {
+                applyPropertyEdit(field);
+            } else if (event.key === 'Escape') {
+                closePropertyPanel();
+            }
+        };
+
+        function applyPropertyEdit(field) {
+            if (selectedBoundaryIndex < 0) return;
+
+            const input = document.getElementById('prop_' + field);
+            const newValue = parseFloat(input.value);
+
+            if (isNaN(newValue)) return;
+
+            // Send edit to extension
+            vscode.postMessage({
+                type: 'editBoundary',
+                boundaryIndex: selectedBoundaryIndex,
+                field: field,
+                value: newValue
+            });
+        }
+
+        window.closePropertyPanel = function() {
+            document.getElementById('propertyPanel').style.display = 'none';
+            selectedBoundaryIndex = -1;
+        };
+
+        // Handle edit confirmation from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.type === 'editApplied') {
+                // Update the boundary in our local array
+                const boundary = boundaries[message.boundaryIndex];
+                if (boundary) {
+                    boundary[message.field] = message.value;
+                    originalValues[message.field] = message.value;
+
+                    // Update input styling
+                    const input = document.getElementById('prop_' + message.field);
+                    if (input) {
+                        input.value = message.value.toFixed(2);
+                        input.classList.remove('modified');
+                    }
+
+                    // Re-render map to show changes
+                    render();
+                }
+            } else if (message.type === 'documentChanged') {
+                // Full refresh of boundaries
+                for (let i = 0; i < message.boundaries.length; i++) {
+                    Object.assign(boundaries[i], message.boundaries[i]);
+                }
+                render();
+                // Refresh property panel if open
+                if (selectedBoundaryIndex >= 0) {
+                    showPropertyPanel(selectedBoundaryIndex);
+                }
+            }
+        });
+
+        // Update map click to also show property panel
+        const originalOnClick = onClick;
+        onClick = function(e) {
+            if (isDragging) return;
+            const rect = canvas.getBoundingClientRect();
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const world = screenToWorld(mx, my);
+
+            queryPoint = { x: world.x, z: world.z };
+            queryResults = findBoundariesAtPoint(world.x, world.z);
+            render();
+            showMapQueryResults(world.x, world.z, queryResults);
+
+            // Show property panel for first result
+            if (queryResults.length > 0) {
+                const firstResult = queryResults[0];
+                const index = boundaries.indexOf(firstResult);
+                if (index >= 0) {
+                    showPropertyPanel(index);
+                }
+            }
+        };
+
+        // Also allow clicking boundaries in the tree to show properties
+        const originalSelectNode = window.selectNode;
+        window.selectNode = function(nodeId) {
+            originalSelectNode(nodeId);
+
+            // Find if this is a boundary node and show properties
+            const node = findNodeById(treeData.root, nodeId);
+            if (node && ['BCIR', 'BREC', 'BPOL', 'BPLN'].includes(node.type)) {
+                // Find matching boundary by offset
+                const boundaryIndex = boundaries.findIndex(b => b.offset === node.offset);
+                if (boundaryIndex >= 0) {
+                    showPropertyPanel(boundaryIndex);
+                }
+            }
+        };
+
+        function findNodeById(node, id) {
+            if (node.id === id) return node;
+            for (const child of node.children || []) {
+                const found = findNodeById(child, id);
+                if (found) return found;
+            }
+            return null;
+        }
+
         // Init
         initMap();
         initTreeView();
@@ -1793,21 +2206,184 @@ export class TRNEditorProvider implements vscode.CustomReadonlyEditorProvider<TR
 }
 
 class TRNDocument implements vscode.CustomDocument {
-    public readonly boundaries: Boundary[];
-    public readonly tree: TRNTree;
+    private _data: Uint8Array;
+    private _boundaries!: Boundary[];  // Assigned in parseData() called from constructor
+    private _tree!: TRNTree;           // Assigned in parseData() called from constructor
+    private _isDirty: boolean = false;
+
+    private readonly _onDidChange = new vscode.EventEmitter<void>();
+    public readonly onDidChange = this._onDidChange.event;
+
+    public get boundaries(): Boundary[] { return this._boundaries; }
+    public get tree(): TRNTree { return this._tree; }
 
     constructor(
         public readonly uri: vscode.Uri,
         data: Uint8Array
     ) {
-        const parser = new TRNParser(data);
-        const doc = parser.parse();
-        this.boundaries = doc.boundaries;
-
-        // Parse tree structure
-        const treeParser = new TRNTreeParser(data);
-        this.tree = treeParser.parse();
+        this._data = new Uint8Array(data);
+        this.parseData();
     }
 
-    dispose(): void {}
+    private parseData(): void {
+        const parser = new TRNParser(this._data);
+        const doc = parser.parse();
+        this._boundaries = doc.boundaries;
+
+        const treeParser = new TRNTreeParser(this._data);
+        this._tree = treeParser.parse();
+    }
+
+    public getData(): Uint8Array {
+        return this._data;
+    }
+
+    public revert(data: Uint8Array): void {
+        this._data = new Uint8Array(data);
+        this.parseData();
+        this._isDirty = false;
+        this._onDidChange.fire();
+    }
+
+    public markSaved(): void {
+        this._isDirty = false;
+    }
+
+    /**
+     * Apply an edit to a boundary property
+     * Returns true if successful
+     */
+    public applyEdit(boundaryIndex: number, field: string, value: number): boolean {
+        const boundary = this._boundaries[boundaryIndex];
+        if (!boundary) return false;
+
+        // Get the DATA chunk offset for this boundary
+        const dataOffset = this.findDataOffset(boundary);
+        if (dataOffset === -1) return false;
+
+        // Calculate field offset within DATA chunk and write the value
+        const fieldOffset = this.getFieldOffset(boundary.type, field);
+        if (fieldOffset === -1) return false;
+
+        const writeOffset = dataOffset + fieldOffset;
+        this.writeFloat32LE(writeOffset, value);
+
+        // Update the in-memory boundary
+        (boundary as any)[field] = value;
+        this._isDirty = true;
+        this._onDidChange.fire();
+
+        return true;
+    }
+
+    /**
+     * Find the DATA chunk offset for a boundary
+     * The boundary.offset points to the FORM, we need to find the DATA inside
+     */
+    private findDataOffset(boundary: Boundary): number {
+        const formOffset = boundary.offset;
+        if (formOffset === undefined) return -1;
+
+        // Search within the boundary FORM for the DATA chunk
+        // Structure: FORM [size] [type] ... FORM [size] [version] ... DATA [size] [values]
+        let pos = formOffset + 8; // Skip FORM + size
+        const formType = this.readString(pos, 4);
+        pos += 4;
+
+        // Read the form size to know the boundary
+        const formSize = this.readUint32BE(formOffset + 4);
+        const formEnd = formOffset + 8 + formSize;
+
+        // Search for DATA chunk, handling nested FORMs
+        return this.findDataChunkRecursive(pos, formEnd, boundary.type);
+    }
+
+    private findDataChunkRecursive(start: number, end: number, boundaryType: string): number {
+        let pos = start;
+        while (pos < end - 8) {
+            const tag = this.readString(pos, 4);
+            const size = this.readUint32BE(pos + 4);
+
+            if (tag === 'DATA') {
+                // Found it! Return offset to the data content (after tag + size)
+                return pos + 8;
+            } else if (tag === 'FORM') {
+                // Recurse into nested FORM
+                const result = this.findDataChunkRecursive(pos + 12, pos + 8 + size, boundaryType);
+                if (result !== -1) return result;
+            }
+            pos += 8 + size;
+        }
+        return -1;
+    }
+
+    /**
+     * Get the offset of a field within the DATA chunk
+     */
+    private getFieldOffset(type: string, field: string): number {
+        // BCIR DATA: centerX(0), centerZ(4), radius(8), featherType(12), featherAmount(16)
+        if (type === 'circle') {
+            switch (field) {
+                case 'centerX': return 0;
+                case 'centerZ': return 4;
+                case 'radius': return 8;
+                case 'featherType': return 12;
+                case 'featherAmount': return 16;
+            }
+        }
+        // BREC DATA: x1(0), z1(4), x2(8), z2(12), featherType(16), featherAmount(20)
+        else if (type === 'rectangle') {
+            switch (field) {
+                case 'x1': return 0;
+                case 'z1': return 4;
+                case 'x2': return 8;
+                case 'z2': return 12;
+                case 'featherType': return 16;
+                case 'featherAmount': return 20;
+            }
+        }
+        // BPOL DATA: vertexCount(0), featherAmount(4), vertices(8+)
+        else if (type === 'polygon') {
+            switch (field) {
+                case 'featherAmount': return 4;
+            }
+        }
+        // BPLN DATA: vertexCount(0), featherAmount(4), width(8), vertices(12+)
+        else if (type === 'polyline') {
+            switch (field) {
+                case 'featherAmount': return 4;
+                case 'width': return 8;
+            }
+        }
+        return -1;
+    }
+
+    private readString(offset: number, length: number): string {
+        let str = '';
+        for (let i = 0; i < length; i++) {
+            str += String.fromCharCode(this._data[offset + i]);
+        }
+        return str;
+    }
+
+    private readUint32BE(offset: number): number {
+        return (this._data[offset] << 24) |
+               (this._data[offset + 1] << 16) |
+               (this._data[offset + 2] << 8) |
+               this._data[offset + 3];
+    }
+
+    private writeFloat32LE(offset: number, value: number): void {
+        const buffer = new ArrayBuffer(4);
+        const view = new DataView(buffer);
+        view.setFloat32(0, value, true); // little-endian
+        this._data[offset] = view.getUint8(0);
+        this._data[offset + 1] = view.getUint8(1);
+        this._data[offset + 2] = view.getUint8(2);
+        this._data[offset + 3] = view.getUint8(3);
+    }
+
+    dispose(): void {
+        this._onDidChange.dispose();
+    }
 }
