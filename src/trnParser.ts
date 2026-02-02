@@ -12,6 +12,45 @@ export interface Point2D {
     z: number;
 }
 
+export interface MapInfo {
+    // Terrain Map and Flora Parameters (from IFF template)
+    terrainFile: string;
+    mapSize: number;                    // Map Size (meters) - total size, e.g. 16384 means -8192 to 8192
+    mapBoundsMin: number;               // Calculated: -mapSize/2
+    mapBoundsMax: number;               // Calculated: mapSize/2
+    chunkWidth: number;                 // Chunk Width
+    tilesPerChunk: number;              // TilesPerChunk (int)
+    useGlobalWaterTable: boolean;       // useGlobalWaterTable (int, 0 or 1)
+    globalWaterTableHeight: number;     // globalWaterTableHeight
+    globalWaterTableShaderSize: number; // globalWaterTableShaderSize
+    waterShaderName: string;            // ShaderName
+    timeCycle: number;                  // timeCycle
+    // Flora Collidable
+    floraCollidableMinDistance: number;
+    floraCollidableMaxDistance: number;
+    floraCollidableTileSize: number;
+    floraCollidableTileBorder: number;
+    floraCollidableSeed: number;
+    // Flora Non-Collidable
+    floraNonCollidableMinDistance: number;
+    floraNonCollidableMaxDistance: number;
+    floraNonCollidableTileSize: number;
+    floraNonCollidableTileBorder: number;
+    floraNonCollidableSeed: number;
+    // Radial Near
+    radialNearMinDistance: number;
+    radialNearMaxDistance: number;
+    radialNearTileSize: number;
+    radialNearTileBorder: number;
+    radialNearSeed: number;
+    // Radial Far
+    radialFarMinDistance: number;
+    radialFarMaxDistance: number;
+    radialFarTileSize: number;
+    radialFarTileBorder: number;
+    radialFarSeed: number;
+}
+
 export interface BoundaryCircle {
     type: 'circle';
     name: string;
@@ -70,6 +109,7 @@ export interface TRNDocument {
     filename: string;
     boundaries: Boundary[];
     layers: Layer[];
+    mapInfo: MapInfo;
 }
 
 export class TRNParser {
@@ -95,13 +135,177 @@ export class TRNParser {
             throw new Error(`Expected PTAT, got ${formType}`);
         }
 
+        // Parse map info from header DATA chunk
+        const mapInfo = this.parseMapInfo();
+
         // Parse the content recursively
         this.parseContent(this.pos, formSize - 4, boundaries, []);
 
         return {
-            filename: '',
+            filename: mapInfo.terrainFile,
             boundaries,
-            layers: []
+            layers: [],
+            mapInfo
+        };
+    }
+
+    private parseMapInfo(): MapInfo {
+        // Find the first DATA chunk in the file (contains map parameters)
+        const savedPos = this.pos;
+
+        // Skip through to find the header DATA chunk (should be near the start)
+        // Structure: FORM PTAT > FORM 00xx > DATA
+        this.pos = 12;  // Skip FORM PTAT header
+
+        // Look for the DATA chunk within the first nested FORM
+        const tag = this.readString(4);
+        const size = this.readUint32BE();
+
+        if (tag === 'FORM') {
+            this.readString(4);  // Skip form type (e.g., "0014")
+
+            // Now look for DATA
+            const dataTag = this.readString(4);
+            const dataSize = this.readUint32BE();
+
+            if (dataTag === 'DATA') {
+                const mapInfo = this.parseMapInfoData(dataSize);
+                this.pos = savedPos;
+                return mapInfo;
+            }
+        }
+
+        // Restore position and return defaults if not found
+        this.pos = savedPos;
+        return this.getDefaultMapInfo();
+    }
+
+    private parseMapInfoData(size: number): MapInfo {
+        const dataStart = this.pos;
+
+        // string[Terrain File]
+        const terrainFile = this.readNullTerminatedString(256);
+
+        // float[Map Size (meters)]
+        const mapSize = this.readFloat32LE();
+
+        // float[Chunk Width]
+        const chunkWidth = this.readFloat32LE();
+
+        // int[TilesPerChunk]
+        const tilesPerChunk = this.readUint32LE();
+
+        // int[useGlobalWaterTable]
+        const useGlobalWaterTable = this.readUint32LE() !== 0;
+
+        // float[globalWaterTableHeight]
+        const globalWaterTableHeight = this.readFloat32LE();
+
+        // float[globalWaterTableShaderSize]
+        const globalWaterTableShaderSize = this.readFloat32LE();
+
+        // string[ShaderName]
+        const waterShaderName = this.readNullTerminatedString(64);
+
+        // float[timeCycle]
+        const timeCycle = this.readFloat32LE();
+
+        // Flora Collidable: int, float, float, float, int
+        const floraCollidableMinDistance = this.readUint32LE();
+        const floraCollidableMaxDistance = this.readFloat32LE();
+        const floraCollidableTileSize = this.readFloat32LE();
+        const floraCollidableTileBorder = this.readFloat32LE();
+        const floraCollidableSeed = this.readUint32LE();
+
+        // Flora Non-Collidable: int, float, float, float, int
+        const floraNonCollidableMinDistance = this.readUint32LE();
+        const floraNonCollidableMaxDistance = this.readFloat32LE();
+        const floraNonCollidableTileSize = this.readFloat32LE();
+        const floraNonCollidableTileBorder = this.readFloat32LE();
+        const floraNonCollidableSeed = this.readUint32LE();
+
+        // Radial Near: int, float, float, float, int
+        const radialNearMinDistance = this.readUint32LE();
+        const radialNearMaxDistance = this.readFloat32LE();
+        const radialNearTileSize = this.readFloat32LE();
+        const radialNearTileBorder = this.readFloat32LE();
+        const radialNearSeed = this.readUint32LE();
+
+        // Radial Far: float, float, float, float, int
+        const radialFarMinDistance = this.readFloat32LE();
+        const radialFarMaxDistance = this.readFloat32LE();
+        const radialFarTileSize = this.readFloat32LE();
+        const radialFarTileBorder = this.readFloat32LE();
+        const radialFarSeed = this.readUint32LE();
+
+        return {
+            terrainFile,
+            mapSize,
+            mapBoundsMin: -mapSize / 2,
+            mapBoundsMax: mapSize / 2,
+            chunkWidth,
+            tilesPerChunk,
+            useGlobalWaterTable,
+            globalWaterTableHeight,
+            globalWaterTableShaderSize,
+            waterShaderName,
+            timeCycle,
+            floraCollidableMinDistance,
+            floraCollidableMaxDistance,
+            floraCollidableTileSize,
+            floraCollidableTileBorder,
+            floraCollidableSeed,
+            floraNonCollidableMinDistance,
+            floraNonCollidableMaxDistance,
+            floraNonCollidableTileSize,
+            floraNonCollidableTileBorder,
+            floraNonCollidableSeed,
+            radialNearMinDistance,
+            radialNearMaxDistance,
+            radialNearTileSize,
+            radialNearTileBorder,
+            radialNearSeed,
+            radialFarMinDistance,
+            radialFarMaxDistance,
+            radialFarTileSize,
+            radialFarTileBorder,
+            radialFarSeed
+        };
+    }
+
+    private getDefaultMapInfo(): MapInfo {
+        return {
+            terrainFile: '',
+            mapSize: 16384,
+            mapBoundsMin: -8192,
+            mapBoundsMax: 8192,
+            chunkWidth: 8,
+            tilesPerChunk: 2,
+            useGlobalWaterTable: false,
+            globalWaterTableHeight: 0,
+            globalWaterTableShaderSize: 0,
+            waterShaderName: '',
+            timeCycle: 0,
+            floraCollidableMinDistance: 0,
+            floraCollidableMaxDistance: 0,
+            floraCollidableTileSize: 0,
+            floraCollidableTileBorder: 0,
+            floraCollidableSeed: 0,
+            floraNonCollidableMinDistance: 0,
+            floraNonCollidableMaxDistance: 0,
+            floraNonCollidableTileSize: 0,
+            floraNonCollidableTileBorder: 0,
+            floraNonCollidableSeed: 0,
+            radialNearMinDistance: 0,
+            radialNearMaxDistance: 0,
+            radialNearTileSize: 0,
+            radialNearTileBorder: 0,
+            radialNearSeed: 0,
+            radialFarMinDistance: 0,
+            radialFarMaxDistance: 0,
+            radialFarTileSize: 0,
+            radialFarTileBorder: 0,
+            radialFarSeed: 0
         };
     }
 
@@ -146,7 +350,7 @@ export class TRNParser {
     }
 
     private extractLayerName(start: number, size: number): string {
-        // Look for IHDR/DATA chunk that contains the layer name
+        // Look for FORM IHDR that contains the layer name
         const end = start + size;
         let pos = start;
 
@@ -154,16 +358,29 @@ export class TRNParser {
             const tag = this.readStringAt(pos, 4);
             const chunkSize = this.readUint32BEAt(pos + 4);
 
-            if (tag === 'DATA' && chunkSize > 4) {
-                // Try to read a name from this DATA chunk
-                const nameStart = pos + 8 + 4; // Skip tag + size + some prefix
-                const name = this.readNullTerminatedStringAt(nameStart, Math.min(64, chunkSize - 4));
-                if (name && name.length > 0 && this.isValidName(name)) {
-                    return name;
+            if (tag === 'FORM') {
+                const formType = this.readStringAt(pos + 8, 4);
+                if (formType === 'IHDR') {
+                    // Found IHDR, now look for DATA chunk inside it
+                    const ihdrStart = pos + 12; // After FORM + size + IHDR
+                    const ihdrEnd = pos + 8 + chunkSize;
+                    let ihdrPos = ihdrStart;
+
+                    while (ihdrPos < ihdrEnd - 8) {
+                        const innerTag = this.readStringAt(ihdrPos, 4);
+                        const innerSize = this.readUint32BEAt(ihdrPos + 4);
+
+                        if (innerTag === 'DATA' && innerSize > 4) {
+                            // IHDR DATA: 4 bytes ID + null-terminated name
+                            const nameStart = ihdrPos + 8 + 4; // Skip tag + size + ID
+                            const name = this.readNullTerminatedStringAt(nameStart, Math.min(64, innerSize - 4));
+                            if (name && name.length > 0) {
+                                return name;
+                            }
+                        }
+                        ihdrPos += 8 + innerSize;
+                    }
                 }
-            } else if (tag === 'FORM') {
-                pos += 8 + chunkSize;
-                continue;
             }
             pos += 8 + chunkSize;
         }
@@ -410,20 +627,21 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPOL DATA: vertexCount, featherType, featherAmount, vertices...
+                // BPOL DATA: vertexCount(4) | vertices(n*8) | featherType(4) | featherAmount(4)
                 if (chunkSize >= 12) {
-                    const dataEnd = this.pos + chunkSize;
                     const vertexCount = this.readUint32LE();
-                    featherType = this.readUint32LE();
-                    featherAmount = this.readFloat32LE();
 
                     vertices = [];
-                    for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
+                    for (let i = 0; i < vertexCount; i++) {
                         vertices.push({
                             x: this.readFloat32LE(),
                             z: this.readFloat32LE()
                         });
                     }
+
+                    // Read tail: featherType(4) + featherAmount(4)
+                    featherType = this.readUint32LE();
+                    featherAmount = this.readFloat32LE();
                 }
                 this.pos = chunkEnd;
             } else {
@@ -467,19 +685,18 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPOL DATA: vertexCount, featherType, featherAmount, vertices...
+                // BPOL DATA: vertexCount(4) | vertices(n*8) | featherType(4) | featherAmount(4)
                 if (chunkSize >= 12) {
-                    const dataEnd = this.pos + chunkSize;
                     const vertexCount = this.readUint32LE();
-                    this.readUint32LE(); // featherType (skip)
-                    featherAmount = this.readFloat32LE();
                     vertices = [];
-                    for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
+                    for (let i = 0; i < vertexCount; i++) {
                         vertices.push({
                             x: this.readFloat32LE(),
                             z: this.readFloat32LE()
                         });
                     }
+                    this.readUint32LE(); // featherType (skip)
+                    featherAmount = this.readFloat32LE();
                 }
                 this.pos = chunkEnd;
             } else {
@@ -494,7 +711,7 @@ export class TRNParser {
         const end = this.pos + size;
         let name = 'BoundaryPolyline';
         let vertices: Point2D[] = [];
-        let width = 0, featherType = 0, featherAmount = 0;
+        let width = 0, featherAmount = 0;
 
         while (this.pos < end - 8) {
             const tag = this.readString(4);
@@ -516,21 +733,22 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPLN DATA: featherType, featherAmount, width, vertexCount, vertices...
+                // BPLN DATA: vertexCount(4) | vertices(n*8) | featherType(4) | featherAmount(4) | width(4)
                 if (chunkSize >= 16) {
-                    const dataEnd = this.pos + chunkSize;
-                    featherType = this.readUint32LE();
-                    featherAmount = this.readFloat32LE();
-                    width = this.readFloat32LE();
                     const vertexCount = this.readUint32LE();
 
                     vertices = [];
-                    for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
+                    for (let i = 0; i < vertexCount; i++) {
                         vertices.push({
                             x: this.readFloat32LE(),
                             z: this.readFloat32LE()
                         });
                     }
+
+                    // Read tail: featherType(4) + featherAmount(4) + width(4)
+                    this.readUint32LE(); // featherType (skip)
+                    featherAmount = this.readFloat32LE();
+                    width = this.readFloat32LE();
                 }
                 this.pos = chunkEnd;
             } else {
@@ -543,7 +761,7 @@ export class TRNParser {
             name,
             vertices,
             width,
-            featherType,
+            featherType: 0,
             featherAmount,
             layerPath,
             offset
@@ -576,20 +794,19 @@ export class TRNParser {
                 }
                 this.pos = chunkEnd;
             } else if (tag === 'DATA') {
-                // BPLN DATA: featherType, featherAmount, width, vertexCount, vertices...
+                // BPLN DATA: vertexCount(4) | vertices(n*8) | featherType(4) | featherAmount(4) | width(4)
                 if (chunkSize >= 16) {
-                    const dataEnd = this.pos + chunkSize;
-                    this.readUint32LE(); // featherType (skip)
-                    featherAmount = this.readFloat32LE();
-                    width = this.readFloat32LE();
                     const vertexCount = this.readUint32LE();
                     vertices = [];
-                    for (let i = 0; i < vertexCount && this.pos + 8 <= dataEnd; i++) {
+                    for (let i = 0; i < vertexCount; i++) {
                         vertices.push({
                             x: this.readFloat32LE(),
                             z: this.readFloat32LE()
                         });
                     }
+                    this.readUint32LE(); // featherType (skip)
+                    featherAmount = this.readFloat32LE();
+                    width = this.readFloat32LE();
                 }
                 this.pos = chunkEnd;
             } else {

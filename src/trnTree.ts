@@ -227,16 +227,14 @@ export class TRNTreeParser {
     }
 
     private extractNodeData(parent: TRNNode, child: TRNNode): void {
-        // Extract name from IHDR or DATA children
-        if (child.type === 'IHDR' || child.type === 'DATA') {
-            if (child.data?.name && !parent.data?.name) {
-                parent.data.name = child.data.name;
-            }
+        // Extract name from any child that has a name
+        if (child.data?.name && !parent.data?.name) {
+            parent.data.name = child.data.name;
         }
 
-        // Recursively check IHDR children for names
-        if (child.type === 'IHDR') {
-            for (const grandchild of child.children) {
+        // Recursively check children for names (for nested structures like LAYR > 0003 > ...)
+        if (!parent.data?.name) {
+            for (const grandchild of child.children || []) {
                 if (grandchild.data?.name) {
                     parent.data.name = grandchild.data.name;
                     break;
